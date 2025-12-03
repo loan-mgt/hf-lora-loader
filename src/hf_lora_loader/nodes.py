@@ -1,118 +1,193 @@
-from inspect import cleandoc
-class Example:
+from __future__ import annotations
+
+import hashlib
+import os
+import shutil
+from typing import Callable, Optional
+
+from huggingface_hub import hf_hub_download
+from huggingface_hub.utils import HfHubHTTPError
+
+try:
+    import folder_paths
+except ImportError:  # pragma: no cover - only executed outside ComfyUI
+    folder_paths = None
+
+try:
+    import nodes
+except ImportError:  # pragma: no cover - only executed outside ComfyUI
+    nodes = None
+
+
+HF_SUBDIR = "hf_lora_loader"
+
+
+class HuggingFaceDownloadError(RuntimeError):
+    """Raised when the Hugging Face download fails."""
+
+
+def _sanitize_repo_id(repo_id: str) -> str:
+    return repo_id.replace("/", "__").replace(" ", "_")
+
+
+def _default_token(token: Optional[str]) -> Optional[str]:
+    return token or os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_TOKEN") or None
+
+
+def _default_lora_root(lora_root: Optional[str]) -> str:
+    if lora_root:
+        return lora_root
+    if folder_paths is None:
+        raise RuntimeError("folder_paths module is required when running inside ComfyUI.")
+    roots = folder_paths.get_folder_paths("loras")
+    if not roots:
+        raise RuntimeError("No 'loras' directory configured in ComfyUI.")
+    return roots[0]
+
+
+def _checksum_matches(path: str, expected_sha256: str) -> bool:
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest().lower() == expected_sha256.lower()
+
+
+def ensure_hf_lora_file(
+    repo_id: str,
+    filename: str,
+    *,
+    revision: Optional[str] = None,
+    save_as: Optional[str] = None,
+    token: Optional[str] = None,
+    force_download: bool = False,
+    resume_download: bool = True,
+    expected_sha256: Optional[str] = None,
+    lora_root: Optional[str] = None,
+    downloader: Optional[Callable[..., str]] = None,
+) -> str:
+    """Download the requested LoRA file (if necessary) and return its relative path.
+
+    The file is stored under the active ComfyUI `loras` directory inside a dedicated
+    sub-folder to avoid clashing with manual downloads. When `expected_sha256` is provided
+    the file is verified after download and whenever it already exists locally.
     """
-    A example node
 
-    Class methods
-    -------------
-    INPUT_TYPES (dict):
-        Tell the main program input parameters of nodes.
-    IS_CHANGED:
-        optional method to control when the node is re executed.
+    if not repo_id.strip():
+        raise ValueError("A Hugging Face repo_id is required.")
+    if not filename.strip():
+        raise ValueError("A filename inside the repository is required.")
 
-    Attributes
-    ----------
-    RETURN_TYPES (`tuple`):
-        The type of each element in the output tulple.
-    RETURN_NAMES (`tuple`):
-        Optional: The name of each output in the output tulple.
-    FUNCTION (`str`):
-        The name of the entry-point method. For example, if `FUNCTION = "execute"` then it will run Example().execute()
-    OUTPUT_NODE ([`bool`]):
-        If this node is an output node that outputs a result/image from the graph. The SaveImage node is an example.
-        The backend iterates on these output nodes and tries to execute all their parents if their parent graph is properly connected.
-        Assumed to be False if not present.
-    CATEGORY (`str`):
-        The category the node should appear in the UI.
-    execute(s) -> tuple || None:
-        The entry point method. The name of this method must be the same as the value of property `FUNCTION`.
-        For example, if `FUNCTION = "execute"` then this method's name must be `execute`, if `FUNCTION = "foo"` then it must be `foo`.
-    """
-    def __init__(self):
-        pass
+    downloader = downloader or hf_hub_download
+    if downloader is None:
+        raise RuntimeError("huggingface_hub is not available. Please install it in your environment.")
 
-    @classmethod
-    def INPUT_TYPES(s):
-        """
-            Return a dictionary which contains config for all input fields.
-            Some types (string): "MODEL", "VAE", "CLIP", "CONDITIONING", "LATENT", "IMAGE", "INT", "STRING", "FLOAT".
-            Input types "INT", "STRING" or "FLOAT" are special values for fields on the node.
-            The type can be a list for selection.
+    root = _default_lora_root(lora_root)
+    repo_slug = _sanitize_repo_id(repo_id.strip())
+    final_name = (save_as or filename).strip()
+    target_dir = os.path.join(root, HF_SUBDIR, repo_slug)
+    os.makedirs(target_dir, exist_ok=True)
+    target_path = os.path.join(target_dir, final_name)
 
-            Returns: `dict`:
-                - Key input_fields_group (`string`): Can be either required, hidden or optional. A node class must have property `required`
-                - Value input_fields (`dict`): Contains input fields config:
-                    * Key field_name (`string`): Name of a entry-point method's argument
-                    * Value field_config (`tuple`):
-                        + First value is a string indicate the type of field or a list for selection.
-                        + Secound value is a config for type "INT", "STRING" or "FLOAT".
-        """
-        return {
-            "required": {
-                "image": ("Image", { "tooltip": "This is an image"}),
-                "int_field": ("INT", {
-                    "default": 0,
-                    "min": 0, #Minimum value
-                    "max": 4096, #Maximum value
-                    "step": 64, #Slider's step
-                    "display": "number" # Cosmetic only: display as "number" or "slider"
-                }),
-                "float_field": ("FLOAT", {
-                    "default": 1.0,
-                    "min": 0.0,
-                    "max": 10.0,
-                    "step": 0.01,
-                    "round": 0.001, #The value represeting the precision to round to, will be set to the step value by default. Can be set to False to disable rounding.
-                    "display": "number"}),
-                "print_to_screen": (["enable", "disable"],),
-                "string_field": ("STRING", {
-                    "multiline": False, #True if you want the field to look like the one on the ClipTextEncode node
-                    "default": "Hello World!"
-                }),
-            },
-        }
+    expected_sha256 = expected_sha256.lower().strip() if expected_sha256 else ""
 
-    RETURN_TYPES = ("IMAGE",)
-    #RETURN_NAMES = ("image_output_name",)
-    DESCRIPTION = cleandoc(__doc__)
-    FUNCTION = "test"
+    needs_download = force_download or not os.path.exists(target_path)
+    if expected_sha256 and os.path.exists(target_path) and not _checksum_matches(target_path, expected_sha256):
+        needs_download = True
 
-    #OUTPUT_NODE = False
-    #OUTPUT_TOOLTIPS = ("",) # Tooltips for the output node
+    if needs_download:
+        try:
+            download_kwargs = {
+                "repo_id": repo_id.strip(),
+                "filename": filename.strip(),
+                "revision": revision.strip() if revision else None,
+                "token": _default_token(token),
+                "local_dir": target_dir,
+                "local_dir_use_symlinks": False,
+                "resume_download": resume_download,
+                "force_download": True if force_download else None,
+            }
+            download_kwargs = {key: value for key, value in download_kwargs.items() if value is not None}
+            downloaded_path = downloader(**download_kwargs)
+        except HfHubHTTPError as exc:  # pragma: no cover - requires real network access
+            raise HuggingFaceDownloadError(f"Failed to download {filename} from {repo_id}: {exc}") from exc
 
-    CATEGORY = "Example"
+        if os.path.normpath(downloaded_path) != os.path.normpath(target_path):
+            shutil.copy2(downloaded_path, target_path)
 
-    def test(self, image, string_field, int_field, float_field, print_to_screen):
-        if print_to_screen == "enable":
-            print(f"""Your input contains:
-                string_field aka input text: {string_field}
-                int_field: {int_field}
-                float_field: {float_field}
-            """)
-        #do some processing on the image, in this example I just invert it
-        image = 1.0 - image
-        return (image,)
+        if expected_sha256 and not _checksum_matches(target_path, expected_sha256):
+            raise ValueError(
+                "Downloaded file checksum mismatch. Please verify 'expected_sha256' or disable the check."
+            )
 
-    """
-        The node will always be re executed if any of the inputs change but
-        this method can be used to force the node to execute again even when the inputs don't change.
-        You can make this node return a number or a string. This value will be compared to the one returned the last time the node was
-        executed, if it is different the node will be executed again.
-        This method is used in the core repo for the LoadImage node where they return the image hash as a string, if the image hash
-        changes between executions the LoadImage node is executed again.
-    """
-    #@classmethod
-    #def IS_CHANGED(s, image, string_field, int_field, float_field, print_to_screen):
-    #    return ""
+    relative_path = os.path.relpath(target_path, root).replace("\\", "/")
+    return relative_path
 
 
-# A dictionary that contains all nodes you want to export with their names
-# NOTE: names should be globally unique
-NODE_CLASS_MAPPINGS = {
-    "Example": Example
-}
+if nodes is not None:
 
-# A dictionary that contains the friendly/humanly readable titles for the nodes
-NODE_DISPLAY_NAME_MAPPINGS = {
-    "Example": "Example Node"
-}
+    class HFLoraLoaderModelOnly(nodes.LoraLoaderModelOnly):
+        CATEGORY = "loaders/HuggingFace"
+        RETURN_TYPES = ("MODEL",)
+        FUNCTION = "load_lora_model_only"
+        DESCRIPTION = (
+            "Download a LoRA file from Hugging Face if it is missing (or outdated) and "
+            "then load it exactly like the built-in LoraLoaderModelOnly node."
+        )
+
+        @classmethod
+        def INPUT_TYPES(cls):
+            return {
+                "required": {
+                    "model": ("MODEL",),
+                    "repo_id": ("STRING", {"default": "author/repo", "tooltip": "owner/repo on huggingface.co"}),
+                    "filename": ("STRING", {"default": "model.safetensors", "tooltip": "File path inside the repo."}),
+                    "strength_model": ("FLOAT", {"default": 1.0, "min": -100.0, "max": 100.0, "step": 0.01}),
+                },
+                "optional": {
+                    "revision": ("STRING", {"default": "main"}),
+                    "save_as": ("STRING", {"default": "", "tooltip": "Override the local filename (optional)."}),
+                    "expected_sha256": ("STRING", {"default": "", "tooltip": "Optional checksum to enforce integrity."}),
+                    "huggingface_token": ("STRING", {"default": "", "tooltip": "Overrides HF_TOKEN env."}),
+                    "force_download": ("BOOLEAN", {"default": False}),
+                    "resume_download": ("BOOLEAN", {"default": True}),
+                },
+            }
+
+        def load_lora_model_only(
+            self,
+            model,
+            repo_id,
+            filename,
+            strength_model,
+            revision="main",
+            save_as="",
+            expected_sha256="",
+            huggingface_token="",
+            force_download=False,
+            resume_download=True,
+        ):  # pylint: disable=arguments-differ
+            local_name = ensure_hf_lora_file(
+                repo_id=repo_id,
+                filename=filename,
+                revision=revision,
+                save_as=save_as or None,
+                token=huggingface_token or None,
+                force_download=bool(force_download),
+                resume_download=bool(resume_download),
+                expected_sha256=expected_sha256 or None,
+            )
+            return super().load_lora_model_only(model, local_name, strength_model)
+
+
+    NODE_CLASS_MAPPINGS = {
+        "HFLoraLoaderModelOnly": HFLoraLoaderModelOnly,
+    }
+
+    NODE_DISPLAY_NAME_MAPPINGS = {
+        "HFLoraLoaderModelOnly": "HF LoRA Loader (Model Only)",
+    }
+
+else:  # pragma: no cover - executed only in environments without ComfyUI
+    NODE_CLASS_MAPPINGS = {}
+    NODE_DISPLAY_NAME_MAPPINGS = {}

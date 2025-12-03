@@ -14,7 +14,30 @@ HF loRa downloader and loader
 
 # Features
 
-- A list of features
+- `HF LoRA Loader (Model Only)` custom node that mirrors the stock `LoraLoaderModelOnly` behavior while ensuring the requested LoRA file exists locally.
+- Automatic download from [huggingface.co](https://huggingface.co) into your `models/loras/hf_lora_loader/...` cache.
+- Optional SHA256 verification plus force/resume download switches to control caching behavior.
+
+## Node overview
+
+| Input | Description |
+| --- | --- |
+| `model` | The model you want to patch (identical to the base node). |
+| `repo_id` | The Hugging Face repository, e.g. `runwayml/stable-diffusion-v1-5`. |
+| `filename` | Path to the LoRA file inside the repo (typically `*.safetensors`). |
+| `strength_model` | Same as the original node. |
+| _optional fields_ | `revision`, `save_as`, `expected_sha256`, `huggingface_token`, `force_download`, `resume_download`. |
+
+The node stores every downloaded file under `models/loras/hf_lora_loader/<owner__repo>/...` and feeds the relative path back into the Comfy loader pipeline. Existing files are reused unless you enable `force_download` or provide a mismatching checksum.
+
+### Authentication
+
+Private repositories require an access token. Use one of the approaches below:
+
+1. Enter the token directly in the node's `huggingface_token` field (kept in-memory only).
+2. Set an environment variable before launching ComfyUI: `HF_TOKEN` or `HUGGINGFACE_TOKEN`.
+
+When both are provided the node field takes precedence.
 
 ## Develop
 
